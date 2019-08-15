@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -157,7 +158,7 @@ func (s *Syslog) Start(acc telegraf.Accumulator) error {
 		s.wg.Add(1)
 		go s.listenStream(acc)
 	} else {
-		l, err := net.ListenPacket(scheme, s.Address)
+		l, err := udpListen(scheme, s.Address)
 		if err != nil {
 			return err
 		}
@@ -173,6 +174,33 @@ func (s *Syslog) Start(acc telegraf.Accumulator) error {
 	}
 
 	return nil
+}
+
+func udpListen(network string, address string) (net.PacketConn, error) {
+	switch network {
+	case "udp", "udp4", "udp6":
+		var addr *net.UDPAddr
+		var err error
+		var ifi *net.Interface
+		if spl := strings.SplitN(address, "%", 2); len(spl) == 2 {
+			address = spl[0]
+			ifi, err = net.InterfaceByName(spl[1])
+			if err != nil {
+				return nil, err
+			}
+		}
+		addr, err = net.ResolveUDPAddr(network, address)
+		if err != nil {
+			return nil, err
+		}
+		if addr.IP.IsMulticast() {
+			log.Printf("Start listening on multicast address %s", addr)
+			return net.ListenMulticastUDP(network, ifi, addr)
+		}
+		log.Printf("Start listening on unicast address %s", addr)
+		return net.ListenUDP(network, addr)
+	}
+	return net.ListenPacket(network, address)
 }
 
 // Stop cleans up all resources
@@ -232,6 +260,8 @@ func (s *Syslog) listenPacket(acc telegraf.Accumulator) {
 			}
 			break
 		}
+
+		log.Printf("I! message %s", b[:n])
 
 		message, err := p.Parse(b[:n])
 		if message != nil {
